@@ -6,11 +6,25 @@ The playback engine is VLC's own [libVLC](https://www.videolan.org/vlc/libvlc.ht
 
 > **Status:** work in progress. The top bar, the control bar and basic playback work. Playlist, sidebar and menus are not implemented yet (see [Roadmap](#roadmap)).
 
+## Demo
+
+https://github.com/user-attachments/assets/06e5daa2-e293-4d07-a748-5018046563c3
+
+## Screenshots
+
+![vlc-ui screenshot 1](docs/demo1.png)
+
+![vlc-ui screenshot 2](docs/demo2.png)
+
+![vlc-ui screenshot 3](docs/demo3.png)
+
+The media shown in the demo and screenshots is listed in [Demo media credits](#demo-media-credits).
+
 ## Design credit
 
 The visual design is the work of **[@juxtopposed](https://www.youtube.com/@juxtopposed)**, who redesigned the whole VLC interface in Figma and published the project as open source on the Figma Community:
 
-- Figma file: [VLC Redesign (Community)](https://www.youtube.com/redirect?event=video_description&redir_token=QUZZTVljRW0xRjFhSE1VN0xUbnFWTkh0Rnk5ZXxBSTVJdTV0NkYyZGxuMF9Vd1RTZ1FRTl9aQWtSZ0hJLWs1WWN1VmtqNWxMSnVmVEpTd2pET0VBMGk0YTlDYVVTcEdFMWFCZUxKR2hWdWI3WGthYXd2cG5QcmhhUFQwM2VkWGhx&q=https%3A%2F%2Fwww.figma.com%2Fcommunity%2Ffile%2F1691465999134370980&v=ERFeOgqk324)
+- Figma file: [VLC Redesign (Community)](https://www.figma.com/community/file/1691465999134370980)
 - Video that inspired this project: [watch on YouTube](https://www.youtube.com/watch?v=ERFeOgqk324)
 - Channel: [youtube.com/@juxtopposed](https://www.youtube.com/@juxtopposed)
 
@@ -66,7 +80,7 @@ Clone the repository and create a virtual environment.
 **bash / zsh:**
 
 ```bash
-git clone <repository-url> vlc-ui
+git clone https://github.com/BrunoGiubilei/vlc-ui.git
 cd vlc-ui
 python3 -m venv .venv
 source .venv/bin/activate
@@ -76,7 +90,7 @@ pip install PySide6 python-vlc
 **fish:**
 
 ```fish
-git clone <repository-url> vlc-ui
+git clone https://github.com/BrunoGiubilei/vlc-ui.git
 cd vlc-ui
 python3 -m venv .venv
 source .venv/bin/activate.fish
@@ -112,8 +126,9 @@ vlc-ui/
 ├── qmldir           # Exposes Theme.qml to the other QML files
 ├── TopBar.qml       # Custom title bar
 ├── ControlBar.qml   # Playback controls
-└── assets/
-    └── icons/       # SVG icons exported from the Figma design
+├── assets/
+│   └── icons/       # SVG icons exported from the Figma design
+└── docs/            # Screenshots used in this README
 ```
 
 ### How it works
@@ -145,16 +160,29 @@ vlc-ui/
 
 ## Credits and licenses
 
-- **Design:** [@juxtopposed](https://www.youtube.com/@juxtopposed), [VLC Redesign (Community)](https://www.figma.com/design/yCqO5zTKEyENr3b54gMfmS/VLC-Redesign--Community-). Check the license of the Figma file for the design and icon assets.
+- **Design:** [@juxtopposed](https://www.youtube.com/@juxtopposed), [VLC Redesign (Community)](https://www.figma.com/community/file/1691465999134370980). Check the license of the Figma file for the design and icon assets.
 - **Playback engine:** [libVLC](https://www.videolan.org/vlc/libvlc.html), part of the [VLC media player](https://www.videolan.org/vlc/) by [VideoLAN](https://www.videolan.org/). libVLC is licensed under the LGPL 2.1 or later.
 - **Python bindings:** [python-vlc](https://github.com/oaubert/python-vlc) by Olivier Aubert, licensed under the LGPL 2.1 or later.
 - **UI toolkit:** [Qt for Python (PySide6)](https://doc.qt.io/qtforpython-6/), licensed under the LGPL / GPL / commercial licenses.
 - **Font:** [Inter](https://rsms.me/inter/), licensed under the SIL Open Font License.
 - **AI assistance:** built with the help of [Claude](https://www.anthropic.com/claude) by Anthropic and fully reviewed by the author.
 
+### Demo media credits
+
+The demo video and screenshots use the following test media. None of it is part of this repository.
+
+- *Big Buck Bunny*, (c) Blender Foundation | [peach.blender.org](https://peach.blender.org/), licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+- *Sintel*, (c) Blender Foundation | [durian.blender.org](https://durian.blender.org/), licensed under [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+- *Jellyfish* test clip, from the [Jellyfish test videos](https://jell.yfish.us/) collection.
+- Music by Kevin MacLeod ([incompetech.com](https://incompetech.com/)), licensed under [Creative Commons: By Attribution 4.0](https://creativecommons.org/licenses/by/4.0/).
+
 This is an independent, community project and is **not affiliated with or endorsed by VideoLAN**. "VLC" and the VLC cone are trademarks of VideoLAN.
 
-The license for this repository's own code has not been chosen yet. Add a `LICENSE` file before reusing it.
+## License
+
+The code in this repository is released under the [MIT License](LICENSE).
+
+The design and its icons are the work of [@juxtopposed](https://www.youtube.com/@juxtopposed) and are **not** covered by the MIT License. Check the license of the [Figma file](https://www.figma.com/community/file/1691465999134370980) before redistributing them.
 
 ---
 
@@ -182,7 +210,7 @@ elif sys.platform == "darwin":
 2. In PowerShell:
 
 ```powershell
-git clone <repository-url> vlc-ui
+git clone https://github.com/BrunoGiubilei/vlc-ui.git
 cd vlc-ui
 py -m venv .venv
 .venv\Scripts\Activate.ps1
@@ -198,7 +226,7 @@ If PowerShell blocks the activation script, run `Set-ExecutionPolicy -Scope Curr
 2. In Terminal:
 
 ```bash
-git clone <repository-url> vlc-ui
+git clone https://github.com/BrunoGiubilei/vlc-ui.git
 cd vlc-ui
 python3 -m venv .venv
 source .venv/bin/activate
