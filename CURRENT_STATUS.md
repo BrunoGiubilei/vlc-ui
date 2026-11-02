@@ -2,7 +2,7 @@
 
 > This file is updated after every change to the project. Newest entries go at the top of the [changelog](#changelog).
 
-**Last updated:** 2026-11-02
+**Last updated:** 2026-11-02 (launcher, `.desktop` installer and `QT_QPA_PLATFORM` default added)
 **Stage:** work in progress. Playback of local files works. Playlist, sidebar and menus do not exist yet.
 **Test environment:** Ubuntu, Wayland, run through XWayland (`QT_QPA_PLATFORM=xcb`), fish shell.
 
@@ -47,21 +47,33 @@ Notes for the implementation:
 
 ### 2. Run as a standalone program
 
-Goal: start the player without activating the venv and exporting variables by hand.
+**Status: first step done, waiting for a test on the owner's machine.**
 
-What has to be typed today:
+Goal: start the player without activating the venv and exporting variables by hand. The old way was:
 
 ```fish
 cd ~/Projetos/vlc-ui-git/ && source .venv/bin/activate.fish && set -x QT_QPA_PLATFORM xcb && python main.py
 ```
 
-Options, from simplest to most work:
+Done (option 1 below):
+- `main.py` sets `QT_QPA_PLATFORM=xcb` by default on Linux, before `QApplication` is created. A value already set in the environment wins, so it can still be overridden (for example `QT_QPA_PLATFORM=wayland`).
+- `vlc-ui`: launcher script. Finds the project folder even through a symlink, runs `.venv/bin/python main.py`, and prints a clear message if the venv is missing.
+- `install-desktop.sh`: installs a symlink at `~/.local/bin/vlc-ui` and an application menu entry at `~/.local/share/applications/vlc-ui.desktop` with absolute paths (`.desktop` files do not expand `~`). `./install-desktop.sh --uninstall` removes both. Run it again if the project folder moves.
 
-1. **Launcher script + `.desktop` entry (recommended first step).** A small shell script that calls `.venv/bin/python main.py` with `QT_QPA_PLATFORM=xcb`, and a `.desktop` file so it appears in the application menu. No packaging needed. Setting `QT_QPA_PLATFORM` inside `main.py` (before `QApplication`) would also remove the need for the variable.
-2. **Compiled executable** with PyInstaller or `pyside6-deploy` (Nuitka). More work: QML files and `assets/icons/` must be bundled, and libVLC still has to come from the system VLC install. Worth trying only if option 1 is not enough.
-3. **AppImage or Flatpak.** Most portable, most work. Not planned.
+Usage:
 
-Details of option 1 are in the README roadmap.
+```sh
+cd ~/Projetos/vlc-ui-git/
+./install-desktop.sh
+vlc-ui                # or open "VLC UI" from the application menu
+```
+
+Not done yet:
+- The player does not open files passed on the command line, so "Open with" and `MimeType` associations are not set up. Needs `sys.argv` handling in `main.py`.
+- The window may not group under the right icon in the dock on some desktops; if so, set the application/desktop file name in Qt and add `StartupWMClass` to the `.desktop` file.
+- Compiled executable (PyInstaller or `pyside6-deploy`) and AppImage/Flatpak: not started. QML files and `assets/icons/` would have to be bundled, and libVLC would still come from the system VLC install. Only worth it if the launcher is not enough.
+
+Options considered, simplest first: 1) launcher script + `.desktop` (done), 2) compiled executable, 3) AppImage or Flatpak.
 
 ## Roadmap (after the priority queue)
 
@@ -78,7 +90,7 @@ Details of option 1 are in the README roadmap.
 - `main.py` starts the application at module level, with no `__main__` guard.
 - Everything lives in `main.py`; controllers should be split into modules when playlist and stream controllers arrive.
 - `PlayerController` reads libVLC on every property access after each 200 ms tick; fine for now, but worth reviewing if more properties are added.
-- Video only embeds on X11 (`set_xwindow`); Wayland needs XWayland, Windows and macOS are untested.
+- Video only embeds on X11 (`set_xwindow`); on Linux the app now forces `xcb` (XWayland) by default. Windows and macOS are untested.
 - The control bar sits below the video; overlays on top of the video are blocked by the native video window.
 
 ## Project files
@@ -89,8 +101,15 @@ Details of option 1 are in the README roadmap.
 | `ARCHITECTURE.md` | Class diagrams and data flow |
 | `STYLE_GUIDE.md` | Python and QML conventions of this project |
 | `CURRENT_STATUS.md` | This file |
+| `vlc-ui` | Launcher script (runs `main.py` with the project's `.venv`) |
+| `install-desktop.sh` | Installs/removes the `~/.local/bin/vlc-ui` symlink and the `.desktop` menu entry |
 
 ## Changelog
+
+### 2026-11-02 (later)
+- `main.py`: added `import os` and a Linux-only default `QT_QPA_PLATFORM=xcb`, set before `QApplication` (existing value is respected).
+- Added `vlc-ui` launcher script and `install-desktop.sh` (installs/removes the symlink and the `.desktop` entry).
+- Priority item 2 (standalone program): first step done; not yet tested on the owner's machine. Class structure unchanged, so `ARCHITECTURE.md` needed no update.
 
 ### 2026-11-02
 - Added `ARCHITECTURE.md` (class diagrams, QML structure, data flow, planned structure).

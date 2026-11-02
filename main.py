@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 
@@ -175,6 +176,11 @@ class Window(QWidget):
         self.mp.set_xwindow(int(self.video.winId()))
         self.mp.play()
 
+
+# libVLC embeds the video through an X11 window id, so on Linux the app must run
+# through XWayland. Set it before QApplication is created; an existing value wins.
+if sys.platform.startswith("linux"):
+    os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 app = QApplication(sys.argv)
 w = Window()

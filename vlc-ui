@@ -1,0 +1,14 @@
+#!/bin/sh
+# Launcher for vlc-ui: runs main.py with the project's virtual environment.
+# Works from any directory and through symlinks (for example ~/.local/bin/vlc-ui).
+SELF=$(readlink -f "$0")
+DIR=$(dirname "$SELF")
+PY="$DIR/.venv/bin/python"
+
+if [ ! -x "$PY" ]; then
+    echo "vlc-ui: virtual environment not found at $DIR/.venv" >&2
+    echo "Create it with: python3 -m venv .venv && .venv/bin/pip install PySide6 python-vlc" >&2
+    exit 1
+fi
+
+exec "$PY" "$DIR/main.py" "$@"
