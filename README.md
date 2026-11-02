@@ -141,12 +141,23 @@ vlc-ui/
 
 ## Roadmap
 
-- [ ] Previous / next buttons and a playlist
-- [ ] Left sidebar and the "more options" menu
-- [ ] Equalizer, subtitles and media settings menus
-- [ ] Window resizing from the edges (frameless window)
-- [ ] Overlay controls on top of the video (libVLC video callbacks or libmpv)
-- [ ] Windows and macOS support
+Next up, before anything else:
+
+1. **Stream from a URL** (for example an online radio). libVLC already plays network URLs; the work is a URL input, a "live" state for the controls (no seek bar or total time) and a placeholder in the canvas when there is no video.
+2. **Run as a standalone program**, without activating the venv and exporting variables by hand. Today this takes:
+   ```
+   cd ~/Projetos/vlc-ui-git/ && source .venv/bin/activate.fish && set -x QT_QPA_PLATFORM xcb && python main.py
+   ```
+   First step: a launcher script plus a `.desktop` entry, so the player shows up in the application menu. A compiled executable (PyInstaller or `pyside6-deploy`) comes only if that is not enough, since QML files, icons and the system libVLC must be handled.
+
+Then:
+
+- Previous / next buttons and a playlist
+- Left sidebar and the "more options" menu
+- Equalizer, subtitles and media settings menus
+- Window resizing from the edges (frameless window)
+- Overlay controls on top of the video (libVLC video callbacks or libmpv)
+- Windows and macOS support
 
 ## Troubleshooting
 
