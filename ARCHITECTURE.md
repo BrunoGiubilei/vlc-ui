@@ -29,7 +29,7 @@ flowchart TB
 
 ## 2. Python classes
 
-All Python code is currently in `main.py`.
+The player is in `main.py`; `nowplaying.py` holds the now-playing sources.
 
 ```mermaid
 classDiagram
@@ -38,15 +38,23 @@ classDiagram
     class QObject
     class QWidget
     class QFrame
+    class QSystemTrayIcon
 
     class PlayerController {
         +tick : Signal
         -mp : vlc.MediaPlayer
+        -_stream : bool
         +position : float
         +timeMs : int
         +lengthMs : int
         +playing : bool
         +volume : int
+        +live : bool
+        +statusText : str
+        +title : str
+        -_now_text : str
+        +set_stream(stream bool, media)
+        +set_now_playing(text str)
         +togglePlay()
         +seek(pos float)
         +setVolume(v int)
@@ -64,6 +72,30 @@ classDiagram
         +toggleFullscreen()
         +closeWindow()
         +openMedia()
+        +openUrl()
+    }
+
+    class TrayIcon {
+        +toggle_action
+        +play_action
+        +refresh_menu()
+        +open_url()
+        +on_activated(reason)
+    }
+
+    class NowPlayingSource {
+        +updated : Signal
+        +cover_loaded : Signal
+        +interval : float
+        +start()
+        +stop()
+    }
+
+    class NowPlayingPanel {
+        +set_info(info dict)
+        +set_cover(url str, data bytes)
+        +cover_pixmap()
+        +clear()
     }
 
     class RoundedFrame {
@@ -80,8 +112,30 @@ classDiagram
         +top : QQuickWidget
         +bar : QQuickWidget
         +open_media()
+        +play_path(path str)
+        +open_url_dialog()
+        +open_url(text str)
+        +open_argument(arg str)
+        -_play(media, stream bool)
+        +tray : TrayIcon
+        +panel : NowPlayingPanel
+        +sources : list
+        -_song_info : dict
+        -_now_source : NowPlayingSource
+        -_start_now_playing(url str)
+        -_stop_now_playing()
+        -_on_now_playing(source, info dict)
+        -_on_cover(source, result dict)
+        +notify_song()
+        +sync_tray_tooltip()
+        +closeEvent(e)
+        +show_window()
+        +toggle_visible()
+        +quit_app()
     }
 
+    QSystemTrayIcon <|-- TrayIcon
+    QObject <|-- NowPlayingSource
     QObject <|-- PlayerController
     QObject <|-- WindowController
     QFrame <|-- RoundedFrame
@@ -90,6 +144,14 @@ classDiagram
     Window "1" *-- "1" PlayerController : creates
     Window "1" *-- "1" WindowController : creates
     Window "1" *-- "1" RoundedFrame : video
+    Window "1" *-- "1" TrayIcon : tray
+    Window "1" o-- "0..1" NowPlayingSource : _now_source
+    NowPlayingSource ..> Window : updated(info), cover_loaded(result)
+    Window ..> PlayerController : set_now_playing(text)
+    Window "1" *-- "1" NowPlayingPanel : panel (inside the video frame)
+    Window ..> TrayIcon : notification, tooltip
+    TrayIcon --> Window : show, hide, quit, open URL
+    TrayIcon --> PlayerController : play / pause
     WindowController --> Window : window actions, open_media()
     PlayerController --> "vlc.MediaPlayer" : polls and commands
     Window --> "vlc.MediaPlayer" : set_media, set_xwindow, play
@@ -100,6 +162,10 @@ Module-level pieces that are not classes:
 | Name | Role |
 |------|------|
 | `HERE` | `Path(__file__).parent`, base path for QML files and the QML import path |
+| `STREAM_SCHEMES` | URL schemes accepted for network streams |
+| `normalize_stream_url(text)` | Validates user text and returns a playable URL (adds `http://` when there is no scheme), or `None` |
+| `load_sources(path)`, `find_source(url, sources)`, `read_song(config)` (`nowplaying.py`) | Read `nowplaying.json`, pick the entry whose `match` is in the stream URL, and fetch "Artist - Song" from the endpoint |
+| `load_theme(path)` (`theme.py`) | Reads the tokens of `Theme.qml` (colors, font, sizes) so Python widgets and QML share one source; `THEME` in `main.py` holds the result |
 | `make_quick(ctx_name, ctrl, qml, height)` | Builds a `QQuickWidget`, adds `HERE` to the import path (so `qmldir` and `Theme` resolve), exposes `ctrl` to QML under `ctx_name`, loads the QML file and fixes the height |
 | bottom of `main.py` | Creates `QApplication`, shows `Window`, runs the event loop |
 
@@ -107,10 +173,13 @@ Module-level pieces that are not classes:
 
 | Class | Owns | Does not do |
 |-------|------|-------------|
-| `PlayerController` | Read access to playback state; playback commands (play/pause, seek, volume) | Open files, touch widgets, know about windows |
+| `PlayerController` | Read access to playback state, including stream state (`live`, `statusText`, `title`); playback commands (play/pause, seek, volume); knows whether the media is a stream (`set_stream`) | Open files, touch widgets, know about windows |
 | `WindowController` | Window actions (move, minimize, maximize, fullscreen, close), the folder name shown in the top bar, forwarding `openMedia()` | Talk to libVLC directly |
+| `TrayIcon` | System tray icon and its menu; routes tray actions to `Window` and `PlayerController` | Decide whether the app quits (that is `Window.closeEvent` / `quit_app`) |
+| `NowPlayingSource` | One background thread that polls a station's JSON endpoint, emits `updated(info)` when the song changes and `cover_loaded` with the image bytes (downloaded once per album) | Touch widgets or the player (the `Window` connects it) |
+| `NowPlayingPanel` | Draws cover, song, artist and album inside the video frame; hides the cover when there is no room | Download anything or decide when to show a notification |
 | `RoundedFrame` | Rounded mask of the video area | Anything about playback |
-| `Window` | Layout, libVLC `Instance` and `MediaPlayer`, file dialog, attaching the video to the frame | Expose state to QML (that goes through the controllers) |
+| `Window` | Layout, libVLC `Instance` and `MediaPlayer`, hiding to the tray and quitting, file and URL dialogs, the `Ctrl+N` shortcut, command-line argument, attaching the video to the frame | Expose state to QML (that goes through the controllers) |
 
 ## 3. QML files
 
@@ -134,7 +203,7 @@ flowchart LR
 |------|--------------------------|-------|
 | `Theme.qml` | none | `pragma Singleton`. Colors, font, sizes. Registered in `qmldir`, so other files use `Theme.x` **without** `import Theme` |
 | `TopBar.qml` | `win` (`WindowController`) | Window drag, double-click to maximize, folder button, window buttons |
-| `ControlBar.qml` | `player` (`PlayerController`) | Prev / play-pause / next, seek bar, times, volume wedge, right-hand icons |
+| `ControlBar.qml` | `player` (`PlayerController`) | Prev / play-pause / next, seek bar, times, volume wedge, right-hand icons. For streams the seek bar shows the connection status or station / now playing, the total time becomes `LIVE`, and seeking is disabled |
 
 ## 4. Data flow
 
@@ -202,7 +271,91 @@ sequenceDiagram
     W->>MP: play()
 ```
 
-### 4.4 Window actions
+### 4.4 Opening a network stream
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant W as Window
+    participant PC as PlayerController
+    participant MP as vlc.MediaPlayer
+
+    U->>W: Ctrl+N (or openUrl() from QML, or a URL on the command line)
+    W->>U: QInputDialog (pre-filled from the clipboard if it holds a URL)
+    U-->>W: text
+    W->>W: normalize_stream_url(text)
+    alt invalid
+        W->>U: QMessageBox warning, nothing changes
+    else valid
+        W->>PC: set_stream(True)
+        W->>MP: set_media(media_new(url)), set_xwindow, play()
+        loop every tick
+            PC->>MP: get_state(), get_length(), is_seekable(), media meta
+            PC-->>W: live / statusText / title (read by ControlBar.qml)
+        end
+    end
+```
+
+`live` is true when a stream is playing or paused and has no known length or cannot seek. `statusText` is non-empty while connecting, buffering, after an error or when the stream ended, and is always empty for local files.
+
+#### Song from a station's API
+
+Some stations only put filler in the ICY metadata. If `nowplaying.json` has an entry whose `match` is in the stream URL, `Window._play` starts a `NowPlayingSource` for it. The source asks the endpoint every `interval_seconds` (in a thread, so the interface never waits for the network) and emits `updated(info)` only when the song changes, followed by `cover_loaded` (the image is downloaded once per album and reused for the next songs). `Window` forwards the text to `PlayerController.set_now_playing`, and `title` returns it before the ICY metadata; the info goes to `NowPlayingPanel`, and when the cover arrives `Window.notify_song` shows a desktop notification (with the cover as its icon) if the window is hidden or minimized. The tray tooltip follows `PlayerController.title` on every tick. Opening another stream or a local file stops the source; an answer from a source that was already replaced is ignored. After three failed requests in a row the text is cleared, so an outdated song is not kept on screen.
+
+```mermaid
+sequenceDiagram
+    participant W as Window
+    participant S as NowPlayingSource (thread)
+    participant API as Station endpoint
+    participant PC as PlayerController
+    participant QML as ControlBar.qml
+
+    W->>S: start() (stream URL matched a source)
+    loop every interval_seconds
+        S->>API: GET (cache-buster parameter)
+        API-->>S: JSON
+        S-->>W: updated(info) only if the song changed
+        W->>PC: set_now_playing(text)
+        S->>API: GET cover image (once per album)
+        S-->>W: cover_loaded(bytes)
+        W->>W: panel.set_cover, notify_song (if hidden)
+    end
+    QML->>PC: player.title (each tick)
+    PC-->>QML: now-playing text, else ICY metadata
+    W->>S: stop() (new media or quit)
+```
+
+### 4.5 Closing, the system tray and quitting
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant W as Window
+    participant T as TrayIcon
+    participant MP as vlc.MediaPlayer
+
+    U->>W: close button (win.closeWindow()) or Alt+F4
+    W->>W: closeEvent
+    alt system tray available
+        W->>W: ignore the event, hide()
+        Note over W,MP: playback continues
+        W->>T: showMessage (first time only)
+    else no system tray
+        W->>W: quit_app()
+    end
+    U->>T: left click
+    T->>W: toggle_visible() / show_window()
+    U->>T: middle click
+    T->>MP: togglePlay()
+    U->>T: menu: Quit
+    T->>W: quit_app()
+    W->>MP: stop()
+    W->>W: QApplication.quit()
+```
+
+`main.py` calls `setQuitOnLastWindowClosed(False)`, otherwise closing a dialog while the main window is hidden would quit the app. Availability of the tray is checked at close time, so a window is never hidden when there is no icon to bring it back.
+
+### 4.6 Window actions
 
 ```mermaid
 sequenceDiagram
@@ -238,6 +391,8 @@ The window is frameless (`Qt.FramelessWindowHint`) and starts at 1100 x 640. Res
 
 ## 7. Planned structure (not implemented)
 
+Network streaming is already implemented inside the existing classes (see 4.4), so there is no separate stream controller.
+
 This is where the roadmap items are expected to land. It is a plan, not current code.
 
 ```mermaid
@@ -251,18 +406,10 @@ classDiagram
         +next()
         +previous()
     }
-    class StreamController {
-        <<planned>>
-        +openUrl(url str)
-        +isLive : bool
-        +nowPlaying : str
-    }
     class Window
     Window *-- PlayerController
     Window *-- WindowController
     Window *-- PlaylistController
-    Window *-- StreamController
-    StreamController ..> PlayerController : sets media, live mode
     PlaylistController ..> PlayerController : sets media
 ```
 

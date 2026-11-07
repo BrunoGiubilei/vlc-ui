@@ -4,12 +4,37 @@ from pathlib import Path
 
 import vlc
 from PySide6.QtCore import QObject, Property, Signal, Slot, QTimer, QUrl, Qt, QRectF
-from PySide6.QtGui import QPainterPath, QRegion
+from PySide6.QtGui import QIcon, QKeySequence, QPainterPath, QRegion, QShortcut
 from PySide6.QtQuickWidgets import QQuickWidget
-from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout,
-                               QFrame, QFileDialog)
+from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QFrame,
+                               QFileDialog, QInputDialog, QLineEdit, QMenu,
+                               QMessageBox, QSystemTrayIcon)
+
+from nowplaying import NowPlayingSource, find_source, load_sources
+from nowplaying_panel import NowPlayingPanel
+from theme import load_theme
 
 HERE = Path(__file__).parent
+# Colors, font and sizes come from Theme.qml, so Python and QML always agree
+THEME = load_theme(HERE / "Theme.qml")
+
+STREAM_SCHEMES = {"http", "https", "rtsp", "rtmp", "mms", "mmsh", "udp", "rtp", "ftp"}
+
+
+def normalize_stream_url(text):
+    """Returns a playable stream URL, or None if the text is not a valid one.
+
+    Text without a scheme is treated as http, for example "radio.example.com/live".
+    """
+    text = text.strip()
+    if not text or any(c.isspace() for c in text):
+        return None
+    if "://" not in text:
+        text = "http://" + text
+    url = QUrl(text)
+    if not url.isValid() or url.scheme().lower() not in STREAM_SCHEMES or not url.host():
+        return None
+    return text
 
 
 class PlayerController(QObject):
@@ -18,9 +43,23 @@ class PlayerController(QObject):
     def __init__(self, mp):
         super().__init__()
         self.mp = mp
+        self._stream = False
+        self._media = None
+        self._now_text = ""
         t = QTimer(self)
         t.timeout.connect(self.tick)
         t.start(200)
+
+    def set_stream(self, stream, media=None):
+        # True for a network stream, False for a local file. The media is kept so the
+        # stream metadata can be read without asking libVLC for it on every tick.
+        self._stream = stream
+        self._media = media
+        self._now_text = ""
+
+    def set_now_playing(self, text):
+        # Song reported by a station's own API (see nowplaying.py); it wins over ICY metadata
+        self._now_text = text
 
     @Property(float, notify=tick)
     def position(self):
@@ -41,6 +80,47 @@ class PlayerController(QObject):
     @Property(int, notify=tick)
     def volume(self):
         return max(0, self.mp.audio_get_volume())
+
+    @Property(bool, notify=tick)
+    def live(self):
+        # A stream is live once it plays but has no known length or cannot seek
+        if not self._stream:
+            return False
+        if self.mp.get_state() not in (vlc.State.Playing, vlc.State.Paused):
+            return False
+        return self.mp.get_length() <= 0 or not self.mp.is_seekable()
+
+    @Property(str, notify=tick)
+    def statusText(self):
+        # Connection status of a stream; empty for local files and while playing normally
+        if not self._stream:
+            return ""
+        state = self.mp.get_state()
+        if state == vlc.State.Opening:
+            return "Connecting..."
+        if state == vlc.State.Buffering:
+            return "Buffering..."
+        if state == vlc.State.Error:
+            return "Could not play this stream"
+        if state == vlc.State.Ended:
+            return "Stream ended"
+        return ""
+
+    @Property(str, notify=tick)
+    def title(self):
+        # Station name and now-playing text of a stream (ICY metadata), when available
+        if not self._stream:
+            return ""
+        if self._now_text:
+            return self._now_text
+        media = self._media
+        if media is None:
+            return ""
+        station = media.get_meta(vlc.Meta.Title) or ""
+        now = media.get_meta(vlc.Meta.NowPlaying) or ""
+        if station and now and station != now:
+            return f"{station} \u2014 {now}"
+        return now or station
 
     @Slot()
     def togglePlay(self):
@@ -103,6 +183,10 @@ class WindowController(QObject):
     def openMedia(self):
         self.window.open_media()
 
+    @Slot()
+    def openUrl(self):
+        self.window.open_url_dialog()
+
 
 class RoundedFrame(QFrame):
     def __init__(self, radius=8):
@@ -114,6 +198,41 @@ class RoundedFrame(QFrame):
         path = QPainterPath()
         path.addRoundedRect(QRectF(self.rect()), self.radius, self.radius)
         self.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+
+class TrayIcon(QSystemTrayIcon):
+    """System tray icon: lets the player keep running with its window hidden."""
+
+    def __init__(self, window, icon_path):
+        super().__init__(QIcon(str(icon_path)), window)
+        self.window = window
+        self.setToolTip("VLC UI")
+
+        menu = QMenu(window)
+        self.toggle_action = menu.addAction("Hide", window.toggle_visible)
+        self.play_action = menu.addAction("Play", window.player_ctrl.togglePlay)
+        menu.addAction("Open network stream...", self.open_url)
+        menu.addSeparator()
+        menu.addAction("Quit", window.quit_app)
+        menu.aboutToShow.connect(self.refresh_menu)
+        self.setContextMenu(menu)
+        self.activated.connect(self.on_activated)
+
+    def refresh_menu(self):
+        # The labels follow the current state each time the menu opens
+        self.toggle_action.setText("Hide" if self.window.isVisible() else "Show")
+        self.play_action.setText("Pause" if self.window.player_ctrl.playing else "Play")
+        self.play_action.setEnabled(self.window.mp.get_media() is not None)
+
+    def open_url(self):
+        self.window.show_window()
+        self.window.open_url_dialog()
+
+    def on_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self.window.toggle_visible()
+        elif reason == QSystemTrayIcon.MiddleClick:
+            self.window.player_ctrl.togglePlay()
 
 
 def make_quick(ctx_name, ctrl, qml, height):
@@ -132,24 +251,30 @@ class Window(QWidget):
         self.setWindowFlag(Qt.FramelessWindowHint, True)
         self.setObjectName("root")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setStyleSheet("#root { background: #1b1b1b; }")
+        self.setStyleSheet("#root { background: %s; }" % THEME["chrome"])
 
         self.instance = vlc.Instance()
         self.mp = self.instance.media_player_new()
 
-        self.video = RoundedFrame(9)
-        self.video.setStyleSheet("background:#2d2b29")
+        self.video = RoundedFrame(THEME["canvasRadius"])
+        self.video.setStyleSheet("background:" + THEME["canvas"])
+
+        # Cover, song and album over the empty video area (audio streams only)
+        self.panel = NowPlayingPanel(self.video, THEME)
+        fl = QVBoxLayout(self.video)
+        fl.setContentsMargins(0, 0, 0, 0)
+        fl.addWidget(self.panel)
 
         self.player_ctrl = PlayerController(self.mp)
         self.win_ctrl = WindowController(self)
 
-        self.top = make_quick("win", self.win_ctrl, "TopBar.qml", 40)
-        self.bar = make_quick("player", self.player_ctrl, "ControlBar.qml", 54)
+        self.top = make_quick("win", self.win_ctrl, "TopBar.qml", THEME["topBarHeight"])
+        self.bar = make_quick("player", self.player_ctrl, "ControlBar.qml", THEME["barHeight"])
 
         # Canvas area: 10px side margins and 1px gap below the top bar (from the design)
         canvas = QWidget()
         cl = QVBoxLayout(canvas)
-        cl.setContentsMargins(10, 1, 10, 0)
+        cl.setContentsMargins(THEME["canvasMargin"], 1, THEME["canvasMargin"], 0)
         cl.addWidget(self.video)
 
         lay = QVBoxLayout(self)
@@ -159,6 +284,56 @@ class Window(QWidget):
         lay.addWidget(canvas, 1)
         lay.addWidget(self.bar)
         self.resize(1100, 640)
+
+        # Same shortcut as VLC's "Open Network Stream"
+        QShortcut(QKeySequence("Ctrl+N"), self).activated.connect(self.open_url_dialog)
+
+        # Closing the window sends the player to the system tray; "Quit" in the tray menu exits
+        self._quitting = False
+        self.sources = load_sources(HERE / "nowplaying.json")
+        self._now_source = None
+        self._tray_notified = False
+        self._song_info = None
+        self._tray_tip = "VLC UI"
+        self.tray = TrayIcon(self, HERE / "assets" / "icons" / "vlc_icon.svg")
+        self.tray.show()
+        self.player_ctrl.tick.connect(self.sync_tray_tooltip)
+
+    def closeEvent(self, e):
+        # Without a system tray there is nowhere to hide, so closing really quits
+        if self._quitting or not QSystemTrayIcon.isSystemTrayAvailable():
+            self.quit_app()
+            e.accept()
+            return
+        e.ignore()
+        self.hide()
+        if not self._tray_notified:
+            self._tray_notified = True
+            self.tray.showMessage(
+                "VLC UI",
+                "Still running in the system tray. Use Quit in the tray menu to exit.",
+                QSystemTrayIcon.Information,
+                4000,
+            )
+
+    def show_window(self):
+        # Also restores a minimized window, keeping it maximized if it was
+        self.setWindowState((self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def toggle_visible(self):
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+        else:
+            self.show_window()
+
+    def quit_app(self):
+        self._quitting = True
+        self._stop_now_playing()
+        self.mp.stop()
+        QApplication.quit()
 
     def open_media(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -170,11 +345,111 @@ class Window(QWidget):
         )
         if not path:
             return
+        self.play_path(path)
+
+    def play_path(self, path):
         self.win_ctrl.set_folder(Path(path).parent.name)
-        self.mp.set_media(self.instance.media_new(path))
+        self._play(self.instance.media_new(path), stream=False)
+
+    def open_url_dialog(self):
+        # Pre-fill with the clipboard when it holds a URL
+        clip = QApplication.clipboard().text().strip()
+        default = clip if "://" in clip and normalize_stream_url(clip) else ""
+        text, ok = QInputDialog.getText(
+            self,
+            "Open network stream",
+            "Stream URL (for example an online radio):",
+            QLineEdit.Normal,
+            default,
+        )
+        if ok:
+            self.open_url(text)
+
+    def open_url(self, text):
+        url = normalize_stream_url(text)
+        if url is None:
+            QMessageBox.warning(
+                self,
+                "Open network stream",
+                "Enter a valid stream URL, for example https://example.com/radio.mp3",
+            )
+            return
+        self.win_ctrl.set_folder(QUrl(url).host())
+        self._play(self.instance.media_new(url), stream=True, url=url)
+
+    def open_argument(self, arg):
+        # A URL or a file path given on the command line
+        if "://" in arg:
+            self.open_url(arg)
+        elif Path(arg).is_file():
+            self.play_path(str(Path(arg).resolve()))
+
+    def _play(self, media, stream, url=None):
+        self._stop_now_playing()
+        self.player_ctrl.set_stream(stream, media)
+        self.mp.set_media(media)
         # Embeds libVLC video into the native frame; needs X11 (run with QT_QPA_PLATFORM=xcb on Wayland)
         self.mp.set_xwindow(int(self.video.winId()))
         self.mp.play()
+        if stream and url:
+            self._start_now_playing(url)
+
+    def _start_now_playing(self, url):
+        config = find_source(url, self.sources)
+        if config is None:
+            return
+        source = NowPlayingSource(config)
+        source.updated.connect(lambda info, s=source: self._on_now_playing(s, info))
+        source.cover_loaded.connect(lambda result, s=source: self._on_cover(s, result))
+        self._now_source = source
+        source.start()
+
+    def _stop_now_playing(self):
+        if self._now_source is not None:
+            self._now_source.stop()
+            self._now_source = None
+        self._song_info = None
+        self.panel.clear()
+
+    def _on_now_playing(self, source, info):
+        # Ignore late answers from a source that has been replaced
+        if source is not self._now_source:
+            return
+        self._song_info = info
+        self.player_ctrl.set_now_playing(info["text"])
+        self.panel.set_info(info)
+
+    def _on_cover(self, source, result):
+        if source is not self._now_source:
+            return
+        self.panel.set_cover(result["url"], result["data"])
+        self.notify_song()
+
+    def notify_song(self):
+        # A desktop notification for the new song, only while the window is out of sight
+        info = self._song_info
+        if not info or not info["text"]:
+            return
+        if self.isVisible() and not self.isMinimized():
+            return
+        if not (QSystemTrayIcon.isSystemTrayAvailable() and QSystemTrayIcon.supportsMessages()):
+            return
+        cover = self.panel.cover_pixmap()
+        album = " \u00b7 ".join(p for p in (info["album"], info["year"]) if p)
+        self.tray.showMessage(
+            info["song"] or info["text"],
+            "\n".join(p for p in (info["artist"], album) if p),
+            QIcon(cover) if cover is not None else QSystemTrayIcon.Information,
+            5000,
+        )
+
+    def sync_tray_tooltip(self):
+        # The tray tooltip shows what is playing (updated only when it changes)
+        title = self.player_ctrl.title
+        tip = f"{title}\nVLC UI" if title else "VLC UI"
+        if tip != self._tray_tip:
+            self._tray_tip = tip
+            self.tray.setToolTip(tip)
 
 
 # libVLC embeds the video through an X11 window id, so on Linux the app must run
@@ -183,6 +458,11 @@ if sys.platform.startswith("linux"):
     os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 app = QApplication(sys.argv)
+# The window can be hidden in the tray; dialogs closing must not quit the app
+app.setQuitOnLastWindowClosed(False)
 w = Window()
 w.show()
+args = app.arguments()[1:]
+if args:
+    QTimer.singleShot(0, lambda: w.open_argument(args[0]))
 sys.exit(app.exec())

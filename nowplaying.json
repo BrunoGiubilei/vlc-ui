@@ -1,0 +1,19 @@
+{
+  "sources": [
+    {
+      "name": "Antena 1",
+      "match": "antenaone.crossradio.com.br",
+      "url": "https://www.antena1.com.br/api/v1/aovivo/getCurrentSongInfo/antena_1?FYC=5979975",
+      "cache_bust_param": "FYC",
+      "interval_seconds": 10,
+      "ok": { "path": "status", "equals": "success" },
+      "fields": {
+        "artist": "data.artist",
+        "song": "data.song",
+        "album": "data.album",
+        "year": "data.year",
+        "cover": "data.cover"
+      }
+    }
+  ]
+}

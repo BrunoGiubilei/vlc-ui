@@ -48,7 +48,19 @@ The split matters: if a QML file can see a name, it is `camelCase`. If only Pyth
 - Use `QQuickWidget.SizeRootObjectToView` and a fixed height set from the matching `Theme` token.
 - Native video stays in a widget, never in QML (see `ARCHITECTURE.md`, section 6).
 
-### 2.5 libVLC
+### 2.5 Network access and background threads
+
+- Anything that waits on the network runs in a background thread; the interface thread never blocks on it. See `NowPlayingSource`.
+- A thread reports back only through a Qt `Signal`; it never touches widgets or controllers directly. The receiver in `Window` checks that the answer still belongs to the current source.
+- Data that differs per station (endpoints, JSON fields) lives in `nowplaying.json`, not in the code.
+- Network failures are expected: catch them, keep the last good value for a short time, and do not show stale data forever.
+
+### 2.6 Plain widgets inside the video frame
+
+- Anything drawn over the video area (like `NowPlayingPanel`) is a plain Qt widget, never a `QQuickWidget`: the frame is a native window and plain widgets are the safe choice there. Such a widget is only visible while libVLC has no video, because libVLC draws its own window on top.
+- A widget inside the frame must not raise the window's minimum size: use `QSizePolicy.Ignored` and size its content from the space it is given.
+
+### 2.7 libVLC
 
 - One `vlc.Instance` and one `MediaPlayer`, owned by `Window`.
 - Platform-specific embedding (`set_xwindow`) lives in one place (`Window.open_media`). If Windows or macOS support is added, extend that spot with a platform switch instead of scattering checks.
@@ -67,6 +79,7 @@ The split matters: if a QML file can see a name, it is `camelCase`. If only Pyth
 ### 3.2 Theme and design tokens
 
 - Colors, font family, font size, bar heights and radii come from `Theme`. No hard-coded hex colors or magic sizes in `TopBar.qml` or `ControlBar.qml`.
+- Python widgets get the same values from `THEME = load_theme(HERE / "Theme.qml")` (`theme.py`), for example `THEME["canvas"]` or `THEME["barHeight"]`. Do not copy a color or size into Python.
 - If the design needs a new value, add it to `Theme.qml` as `readonly property` with a descriptive name, then use it.
 - Token names describe the role, not the value (`track`, `played`, `accent`), so a palette change does not rename anything.
 - Current tokens: `chrome`, `bg`, `canvas`, `track`, `played`, `accent`, `text`, `title`, `fontFamily`, `fontSize`, `topBarHeight`, `barHeight`, `radius`, `canvasRadius`, `canvasMargin`.
@@ -126,7 +139,5 @@ These exist in the current code and should be cleaned up when the surrounding co
 
 | Where | Deviation | Fix |
 |-------|-----------|-----|
-| `main.py`, `Window.__init__` | Colors `#1b1b1b` and `#2d2b29` are hard-coded and duplicate `Theme.chrome` / `Theme.canvas` | Keep one source of truth, for example pass the colors from a shared Python constant or read them from the theme |
-| `main.py`, `Window.__init__` | Heights `40`, `54` and margin `10`, radius `9` duplicate `Theme.topBarHeight`, `Theme.barHeight`, `Theme.canvasMargin`, `Theme.canvasRadius` | Same as above |
 | `main.py` bottom | The application starts at module level, with no `if __name__ == "__main__":` guard | Wrap start-up in a `main()` function |
 | `main.py` | Everything is in a single file | Split controllers into modules when the playlist and stream controllers are added |

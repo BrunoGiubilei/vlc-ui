@@ -81,8 +81,10 @@ Rectangle {
             width: Math.max(8, (seek.width - 4) * player.position)
             radius: 4
             color: Theme.played
+            visible: !player.live
         }
         Rectangle {
+            visible: !player.live
             x: playedRect.x + playedRect.width - width
             y: 2
             width: 8; height: 24
@@ -90,9 +92,25 @@ Rectangle {
             color: Theme.accent
         }
 
+        // streams: connection status, or station / now playing, instead of the progress
+        Text {
+            anchors.fill: parent
+            anchors.leftMargin: 12
+            anchors.rightMargin: 12
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+            text: player.statusText !== "" ? player.statusText : (player.live ? player.title : "")
+            visible: text !== ""
+            color: Theme.text
+            font.family: Theme.fontFamily
+            font.pixelSize: Theme.fontSize
+        }
+
         MouseArea {
             anchors.fill: parent
-            cursorShape: Qt.PointingHandCursor
+            enabled: !player.live
+            cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
             function seekTo(mx) {
                 player.seek(Math.max(0, Math.min(1, (mx - 2) / (seek.width - 4))))
             }
@@ -105,8 +123,8 @@ Rectangle {
     Text {
         x: root.rx(1506)
         anchors.verticalCenter: parent.verticalCenter
-        text: root.fmt(player.lengthMs)
-        color: Theme.text
+        text: player.live ? "LIVE" : root.fmt(player.lengthMs)
+        color: player.live ? Theme.accent : Theme.text
         font.family: Theme.fontFamily
         font.pixelSize: Theme.fontSize
     }
