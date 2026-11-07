@@ -52,6 +52,8 @@ The split matters: if a QML file can see a name, it is `camelCase`. If only Pyth
 
 - Anything that waits on the network runs in a background thread; the interface thread never blocks on it. See `NowPlayingSource`.
 - A thread reports back only through a Qt `Signal`; it never touches widgets or controllers directly. The receiver in `Window` checks that the answer still belongs to the current source.
+- Optional dependencies (like `dbus-fast`) are imported inside `try/except ImportError`; the feature turns itself off with one clear message on stderr and the player keeps working.
+- A service that lives on another bus or thread (MPRIS) keeps its own copy of the state it publishes; the `Window` pushes that state, and the service sends requests back as a Qt `Signal`. It never calls the player directly.
 - Data that differs per station (endpoints, JSON fields) lives in `nowplaying.json`, not in the code.
 - Network failures are expected: catch them, keep the last good value for a short time, and do not show stale data forever.
 

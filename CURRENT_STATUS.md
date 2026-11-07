@@ -12,6 +12,7 @@
 - Open a local media file from the folder button or the folder label in the top bar (`QFileDialog`)
 - Open a network stream (online radio and similar) with `Ctrl+N`, or a URL / file passed on the command line. The control bar shows connection status, station and now-playing text, and `LIVE` instead of the total time
 - Song title from a station's own API (`nowplaying.py` + `nowplaying.json`), used for Antena 1 whose stream only carries filler; other streams keep using the ICY metadata
+- MPRIS (Linux, needs `dbus-fast`): title, artist, album, cover, status, volume and length are published on the session bus as `vlc_ui`; play, pause, play-pause, stop, seek, volume, open address, raise and quit work from `playerctl`, bars and media keys
 - Cover art, song, artist and "Album · year" in the empty video area for stations with a source in `nowplaying.json`; a desktop notification (with the cover) for each new song while the window is hidden; the tray tooltip shows what is playing
 - System tray: closing the window hides it and playback continues; tray icon with Show/Hide, Play/Pause, Open network stream and Quit; left click shows/hides, middle click plays/pauses. Without a tray, closing quits as before
 - Run without activating the venv: `vlc-ui` launcher, `install-desktop.sh` and the default `QT_QPA_PLATFORM=xcb` in `main.py`
@@ -57,7 +58,7 @@ Not done:
 - The API answer also has more than is used today: `album`, `year`, `cover` (image URL, 1000x1000), `lyrics` and `lyricsTranslation` (HTML), `artistShortBio` (HTML, truncated), `itunes` (link), `time` (when the song started) and `songId` / slugs. Only artist and song are used. Ideas, in the order they seem worth doing:
   1. ~~Song change notification and tray tooltip~~ done (2026-11-06).
   2. ~~Cover art and "Album, year" in the canvas for audio streams~~ done (2026-11-06).
-  3. MPRIS (D-Bus): song, artist and cover in the desktop's media widget and lock screen, and the keyboard media keys for play/pause. Fits the tray / background use.
+  3. ~~MPRIS (D-Bus): song, artist and cover in the desktop's media widget and lock screen, and the keyboard media keys~~ implemented (2026-11-07), needs a test on Niri.
   4. Lyrics (with the Portuguese translation) in a panel. Needs a place in the interface; fits the planned sidebar. The text is HTML with `<br>` and is third-party content served by the station's site.
   5. History of songs played in this session, and a button to open the song in iTunes.
 - Other stations need their own entry in `nowplaying.json` (see the README).
@@ -73,9 +74,23 @@ Not done:
 - The window may not group under the right icon in the dock on some desktops; if so, set the application/desktop file name in Qt and add `StartupWMClass` to the `.desktop` file.
 - Compiled executable (PyInstaller or `pyside6-deploy`) and AppImage/Flatpak. QML files and `assets/icons/` would have to be bundled, and libVLC would still come from the system VLC install. Only worth it if the launcher is not enough.
 
-## Cover, notification and tooltip: implemented, needs a test on the real station
+## MPRIS: implemented, needs a test on Niri
 
-Tested here against a fake station API with real-shaped data and generated cover images (download once per album, missing cover, a new album replacing the old cover, notification only while hidden, tooltip, small and narrow windows). To check on the owner's machine with Antena 1:
+Built with `dbus-fast` (pure Python, installed with `pip install dbus-fast`) in a background thread. Tested here against a private session bus with `playerctl`, `busctl` and `gdbus`: the player is listed, status, metadata (title, artist, album, cover as a cached file, url, length), property types (`Position` is `x`, `Volume` is `d`, `Metadata` is `a{sv}`), `PropertiesChanged` on a song change, play-pause, play, pause, stop, volume, open (file and http), position set and relative, Raise, Quit, a second instance getting the `.instance<pid>` name, and no crash without a session bus. To check on the owner's setup (Niri):
+- `playerctl -l` lists `vlc_ui` while the player runs.
+- The bar or shell shows the song, artist and cover (depends on which bar; waybar's `mpris` module and quickshell-based shells read MPRIS).
+- Media keys bound in Niri's `config.kdl` to `playerctl` (example in the README) play and pause the radio.
+- Quitting from the tray removes the player from the bar.
+
+Not done:
+- Next and Previous do nothing (there is no playlist), `CanGoNext` and `CanGoPrevious` are false.
+- No `LoopStatus`, `Shuffle`, `TrackList`, fullscreen control or `Seeked` signal.
+- Local files have no cover (the file name is the title).
+- The desktop may keep showing the player after the window is hidden in the tray; that is intended, so the bar keeps its controls.
+
+## Cover, notification and tooltip: implemented, confirmed working by the owner (2026-11-06)
+
+Tested here against a fake station API with real-shaped data and generated cover images (download once per album, missing cover, a new album replacing the old cover, notification only while hidden, tooltip, small and narrow windows), then confirmed by the owner on Antena 1. What was checked:
 - The cover, song, artist and "Album · year" appear in the video area and change with the song.
 - Hide the window in the tray and wait for the next song: a notification with the cover should appear (how it looks depends on the desktop; some ignore the icon).
 - The tray tooltip shows the song.
@@ -128,6 +143,7 @@ Not done:
 | `STYLE_GUIDE.md` | Python and QML conventions of this project |
 | `CURRENT_STATUS.md` | This file |
 | `vlc-ui` | Launcher script (runs `main.py` with the project's `.venv`) |
+| `mpris.py` | MPRIS D-Bus service in a background thread (`dbus-fast`): metadata, status, commands, cover cache |
 | `nowplaying_panel.py` | Cover, song, artist and album widget inside the video frame |
 | `theme.py` | Reads the design tokens of `Theme.qml` for Python widgets |
 | `nowplaying.py` / `nowplaying.json` | Song titles from a station's own web API: polling thread, and the list of stations |
@@ -135,6 +151,15 @@ Not done:
 | `install-desktop.sh` | Installs/removes the `~/.local/bin/vlc-ui` symlink and the `.desktop` menu entry |
 
 ## Changelog
+
+### 2026-11-07 (MPRIS)
+- New `mpris.py`: `MprisService` (`org.mpris.MediaPlayer2` and `.Player` interfaces, `command` signal, `update(state)`), `build_metadata`, `cache_cover`. Optional dependency `dbus-fast`; Linux only; a second instance uses the `.instance<pid>` name.
+- `main.py`: `on_tick` (tooltip and MPRIS), `mpris_state`, `sync_mpris`, `_on_mpris_command`, `open_uri`; the cover is cached as a file for the shell; position is 0 and seeking is off for live streams; `quit_app` stops the service.
+- `vlc-ui` launcher message and README (feature, requirements, new "Desktop integration (MPRIS)" section with `playerctl`, waybar and Niri key bindings, troubleshooting), `ARCHITECTURE.md` (class diagram, module table, sequence diagram), `STYLE_GUIDE.md` (optional dependencies, services on other threads) updated.
+- Tested against a private D-Bus session with `playerctl`, `busctl` and `gdbus` (see the MPRIS notes above). Not yet tested on Niri.
+
+### 2026-11-06 (cover, notification and tooltip: confirmed)
+- The owner confirmed on the real station that the cover panel, the notification and the tray tooltip work. No code changes. Next candidate: MPRIS (idea 3 in the stream notes).
 
 ### 2026-11-06 (cover, notification and tooltip)
 - New `nowplaying_panel.py` (`NowPlayingPanel`: cover with rounded corners, song, artist, "Album · year"; hides the cover when there is no room) and `theme.py` (`load_theme` reads `Theme.qml`).

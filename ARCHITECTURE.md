@@ -29,7 +29,7 @@ flowchart TB
 
 ## 2. Python classes
 
-The player is in `main.py`; `nowplaying.py` holds the now-playing sources.
+The player is in `main.py`; `nowplaying.py` holds the now-playing sources and `mpris.py` the MPRIS service.
 
 ```mermaid
 classDiagram
@@ -91,6 +91,15 @@ classDiagram
         +stop()
     }
 
+    class MprisService {
+        +command : Signal
+        +state : dict
+        +bus_name : str
+        +start()
+        +stop()
+        +update(state dict)
+    }
+
     class NowPlayingPanel {
         +set_info(info dict)
         +set_cover(url str, data bytes)
@@ -119,6 +128,12 @@ classDiagram
         -_play(media, stream bool)
         +tray : TrayIcon
         +panel : NowPlayingPanel
+        +mpris : MprisService
+        +on_tick()
+        +mpris_state(title str)
+        +sync_mpris(title str)
+        -_on_mpris_command(name, argument)
+        +open_uri(uri str)
         +sources : list
         -_song_info : dict
         -_now_source : NowPlayingSource
@@ -127,7 +142,7 @@ classDiagram
         -_on_now_playing(source, info dict)
         -_on_cover(source, result dict)
         +notify_song()
-        +sync_tray_tooltip()
+        +sync_tray_tooltip(title str)
         +closeEvent(e)
         +show_window()
         +toggle_visible()
@@ -136,6 +151,7 @@ classDiagram
 
     QSystemTrayIcon <|-- TrayIcon
     QObject <|-- NowPlayingSource
+    QObject <|-- MprisService
     QObject <|-- PlayerController
     QObject <|-- WindowController
     QFrame <|-- RoundedFrame
@@ -145,6 +161,9 @@ classDiagram
     Window "1" *-- "1" WindowController : creates
     Window "1" *-- "1" RoundedFrame : video
     Window "1" *-- "1" TrayIcon : tray
+    Window "1" *-- "1" MprisService : mpris
+    Window ..> MprisService : update(state) on every tick
+    MprisService ..> Window : command(name, argument)
     Window "1" o-- "0..1" NowPlayingSource : _now_source
     NowPlayingSource ..> Window : updated(info), cover_loaded(result)
     Window ..> PlayerController : set_now_playing(text)
@@ -166,6 +185,7 @@ Module-level pieces that are not classes:
 | `normalize_stream_url(text)` | Validates user text and returns a playable URL (adds `http://` when there is no scheme), or `None` |
 | `load_sources(path)`, `find_source(url, sources)`, `read_song(config)` (`nowplaying.py`) | Read `nowplaying.json`, pick the entry whose `match` is in the stream URL, and fetch "Artist - Song" from the endpoint |
 | `load_theme(path)` (`theme.py`) | Reads the tokens of `Theme.qml` (colors, font, sizes) so Python widgets and QML share one source; `THEME` in `main.py` holds the result |
+| `cache_cover(data, key)`, `build_metadata(state)` (`mpris.py`) | Save the cover as a file for the shell to load (only the current one is kept) and build the MPRIS Metadata dictionary |
 | `make_quick(ctx_name, ctrl, qml, height)` | Builds a `QQuickWidget`, adds `HERE` to the import path (so `qmldir` and `Theme` resolve), exposes `ctrl` to QML under `ctx_name`, loads the QML file and fixes the height |
 | bottom of `main.py` | Creates `QApplication`, shows `Window`, runs the event loop |
 
@@ -177,6 +197,7 @@ Module-level pieces that are not classes:
 | `WindowController` | Window actions (move, minimize, maximize, fullscreen, close), the folder name shown in the top bar, forwarding `openMedia()` | Talk to libVLC directly |
 | `TrayIcon` | System tray icon and its menu; routes tray actions to `Window` and `PlayerController` | Decide whether the app quits (that is `Window.closeEvent` / `quit_app`) |
 | `NowPlayingSource` | One background thread that polls a station's JSON endpoint, emits `updated(info)` when the song changes and `cover_loaded` with the image bytes (downloaded once per album) | Touch widgets or the player (the `Window` connects it) |
+| `MprisService` | Publishes the player on the session bus (`org.mpris.MediaPlayer2.vlc_ui`) from its own thread; keeps the last state it was given and answers D-Bus reads from it; announces changes with PropertiesChanged | Touch the player or widgets: commands go out as the `command` signal |
 | `NowPlayingPanel` | Draws cover, song, artist and album inside the video frame; hides the cover when there is no room | Download anything or decide when to show a notification |
 | `RoundedFrame` | Rounded mask of the video area | Anything about playback |
 | `Window` | Layout, libVLC `Instance` and `MediaPlayer`, hiding to the tray and quitting, file and URL dialogs, the `Ctrl+N` shortcut, command-line argument, attaching the video to the frame | Expose state to QML (that goes through the controllers) |
@@ -324,6 +345,34 @@ sequenceDiagram
     PC-->>QML: now-playing text, else ICY metadata
     W->>S: stop() (new media or quit)
 ```
+
+#### MPRIS (desktop integration)
+
+```mermaid
+sequenceDiagram
+    participant PC as PlayerController
+    participant W as Window
+    participant M as MprisService (thread, asyncio)
+    participant D as Desktop (waybar, playerctl, media keys)
+
+    loop every tick (200 ms)
+        PC-->>W: tick
+        W->>W: mpris_state(): status, title, artist, album, cover file, length, position, volume
+        alt anything except the position changed
+            W->>M: update(state)
+            M-->>D: PropertiesChanged (PlaybackStatus, Metadata, Volume, CanSeek...)
+        else only the position
+            W->>M: position stored, no announcement
+        end
+    end
+    D->>M: PlayPause / Play / Pause / Stop / Seek / SetPosition / Volume / OpenUri / Raise / Quit
+    M-->>W: command(name, argument) (queued to the Qt thread)
+    W->>PC: togglePlay, seek, or the libVLC player directly
+    D->>M: read Position
+    M-->>D: last position stored by Window
+```
+
+`Position` is read on demand by clients, so it is only stored, never announced. For a live stream it is 0 and `CanSeek` is false; for a station with a source, the title, artist, album and cover come from the now-playing source, otherwise from the stream metadata or the file name. The service claims the name `org.mpris.MediaPlayer2.vlc_ui`; if another player instance already owns it, it uses `...vlc_ui.instance<pid>`, as the MPRIS specification describes. Without `dbus-fast`, without a session bus, or outside Linux, the service does nothing and the player runs normally.
 
 ### 4.5 Closing, the system tray and quitting
 

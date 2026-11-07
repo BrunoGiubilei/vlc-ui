@@ -40,6 +40,7 @@ This project was created with the help of **Claude** (by Anthropic) and was **en
 - Open media from the folder button in the top bar
 - Play network streams, for example an online radio (`Ctrl+N`, or a URL on the command line). Streams show a **LIVE** state with the station and now-playing text instead of the seek bar
 - Show the song that is playing on a radio: from the stream's own metadata, or from the station's web API for stations that do not publish it in the stream (configured in `nowplaying.json`; Antena 1 is included). When the station provides it, the empty video area shows the album cover, song, artist and album, and a desktop notification announces each new song while the window is hidden in the tray
+- Tell the desktop what is playing through **MPRIS** (Linux): status bars such as waybar, `playerctl`, media keys and lock screens show the song, artist, album and cover, and can play, pause and seek
 - Keep playing in the background from the **system tray**: closing the window hides it, and the tray icon brings it back
 - Play / pause, seek bar with played-time fill and handle, current and total time
 - Volume control with the gradient wedge from the design
@@ -65,7 +66,7 @@ Windows and macOS instructions are at the end of this document and are **unteste
 
 - Python 3.10 or newer
 - [VLC](https://www.videolan.org/vlc/) installed on the system (the Python package only calls the installed libVLC library)
-- Python packages: `PySide6` and `python-vlc`
+- Python packages: `PySide6` and `python-vlc`; on Linux also `dbus-fast` (optional, only for MPRIS)
 - [Inter](https://rsms.me/inter/) font (optional, used by the design; Qt falls back to another font if it is missing)
 
 ### Ubuntu / Debian
@@ -87,7 +88,7 @@ git clone https://github.com/BrunoGiubilei/vlc-ui.git
 cd vlc-ui
 python3 -m venv .venv
 source .venv/bin/activate
-pip install PySide6 python-vlc
+pip install PySide6 python-vlc dbus-fast
 ```
 
 **fish:**
@@ -97,7 +98,7 @@ git clone https://github.com/BrunoGiubilei/vlc-ui.git
 cd vlc-ui
 python3 -m venv .venv
 source .venv/bin/activate.fish
-pip install PySide6 python-vlc
+pip install PySide6 python-vlc dbus-fast
 ```
 
 Run the player:
@@ -165,6 +166,34 @@ The tray icon tooltip always shows what is playing. The notification for each ne
 
 To add a station, open its web player in the browser, open the developer tools (F12), go to Network, filter by Fetch/XHR and look for the request that returns the current song. Run `python tools/icy_probe.py STREAM_URL` first to check whether the stream already carries the title. These endpoints are not public APIs, so they can change without notice.
 
+### Desktop integration (MPRIS)
+
+On Linux the player publishes itself on the session bus as `org.mpris.MediaPlayer2.vlc_ui` (it needs the optional `dbus-fast` package). Anything that understands MPRIS can then show and control it:
+
+- the title, artist, album and cover of what is playing (for a station with a source in `nowplaying.json`, the song; for a local file, the file name and length);
+- play, pause, stop, seek and volume, and opening an address with `playerctl open`;
+- the player is listed under the name "VLC UI", linked to `vlc-ui.desktop` for its icon.
+
+Niri has no media widget of its own: the bar or shell you run on top of it shows the song, as long as it reads MPRIS (waybar, quickshell-based shells and most others do). Check that the player is visible with:
+
+```
+playerctl -l                  # should list vlc_ui
+playerctl -p vlc_ui metadata  # title, artist, album, cover
+playerctl -p vlc_ui play-pause
+```
+
+For waybar, the `mpris` module shows it, for example `"mpris": { "format": "{player_icon} {dynamic}" }`. For the media keys in Niri, bind them to `playerctl` in `config.kdl`:
+
+```
+binds {
+    XF86AudioPlay allow-when-locked=true { spawn "playerctl" "play-pause"; }
+    XF86AudioNext allow-when-locked=true { spawn "playerctl" "next"; }
+    XF86AudioPrev allow-when-locked=true { spawn "playerctl" "previous"; }
+}
+```
+
+(`next` and `previous` do nothing yet: there is no playlist.) If several players are running, `playerctl` controls the one that was most recently active unless you pass `-p vlc_ui`. The cover is saved as a file in `~/.cache/vlc-ui/` (only the current one is kept) so the shell can load it.
+
 ## Project structure
 
 ```
@@ -172,6 +201,7 @@ vlc-ui/
 ├── main.py          # Qt window, libVLC player and Python <-> QML controllers
 ├── nowplaying.py    # Song titles and covers from a station's own web API
 ├── nowplaying_panel.py  # Cover, song and album shown in the empty video area
+├── mpris.py         # MPRIS (D-Bus) service: status bars, playerctl and media keys
 ├── theme.py         # Reads the design tokens from Theme.qml for the Python widgets
 ├── nowplaying.json  # Stations that need it (stream match, endpoint, JSON fields)
 ├── vlc-ui           # Launcher script (uses .venv, works from any folder)
@@ -193,6 +223,7 @@ vlc-ui/
 - The top bar and the control bar are `QQuickWidget`s that load QML files.
 - `PlayerController` exposes the playback state (position, time, length, volume, playing, and for streams `live`, `statusText` and `title`) to QML and receives actions such as play/pause, seek and volume.
 - `NowPlayingSource` (in `nowplaying.py`) polls a station's web API in a background thread and hands the song to `PlayerController`, which shows it instead of the stream metadata, and the cover to `NowPlayingPanel`, which draws it inside the video frame (a plain Qt widget, visible only while no video is playing). Python widgets take their colors, font and sizes from `Theme.qml` through `theme.py`.
+- `MprisService` (in `mpris.py`) runs the MPRIS D-Bus service in a background thread. `Window` pushes the current state to it on every tick, and the commands it receives (play, pause, seek, volume, open) come back to the Qt thread as a signal.
 - `WindowController` handles window actions (move, minimize, maximize, fullscreen, close, open media, open stream URL). `TrayIcon` is the system tray icon and its menu; closing the window hides it there instead of quitting.
 - The controls sit *below* the video instead of over it, which avoids the compositing conflict between libVLC's native video window and QML overlays.
 
@@ -222,6 +253,7 @@ Then:
 | `module "Theme" is not installed` | Keep `qmldir` next to the QML files and do not `import Theme` in them |
 | An icon does not show up | Check that its file name matches the path in the QML and that it exists in `assets/icons/` |
 | A radio shows no song title | Not every station publishes it. Run `python tools/icy_probe.py URL --vlc` to see what the station sends (ICY metadata and status pages) and what libVLC reads from it |
+| The player does not show in my bar, or `playerctl -l` does not list `vlc_ui` | Install `dbus-fast` in the project's environment (`.venv/bin/pip install dbus-fast`), make sure the session bus is available (`echo $DBUS_SESSION_BUS_ADDRESS`), and start the player from a terminal to read the message it prints. Check that your bar has an MPRIS module |
 | There is no tray icon and closing the window quits the player | The desktop has no system tray. On GNOME, install the AppIndicator and KStatusNotifierItem Support extension |
 | `python-vlc` cannot find libVLC | Make sure VLC is installed with the same architecture as Python (64-bit with 64-bit) |
 

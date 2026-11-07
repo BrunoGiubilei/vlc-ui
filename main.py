@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QFrame,
                                QMessageBox, QSystemTrayIcon)
 
 from nowplaying import NowPlayingSource, find_source, load_sources
+from mpris import EMPTY_STATE, MprisService, cache_cover
 from nowplaying_panel import NowPlayingPanel
 from theme import load_theme
 
@@ -297,7 +298,18 @@ class Window(QWidget):
         self._tray_tip = "VLC UI"
         self.tray = TrayIcon(self, HERE / "assets" / "icons" / "vlc_icon.svg")
         self.tray.show()
-        self.player_ctrl.tick.connect(self.sync_tray_tooltip)
+        self.player_ctrl.tick.connect(self.on_tick)
+
+        # MPRIS: what is playing shows in status bars / playerctl, and media keys work
+        self._media_name = ""      # name and address of what is playing, for MPRIS
+        self._media_uri = ""
+        self._art_url = ""         # file:// URL of the current cover, for MPRIS
+        self._track = 0
+        self._track_key = None
+        self._mpris_key = None
+        self.mpris = MprisService()
+        self.mpris.command.connect(self._on_mpris_command)
+        self.mpris.start()
 
     def closeEvent(self, e):
         # Without a system tray there is nowhere to hide, so closing really quits
@@ -331,6 +343,7 @@ class Window(QWidget):
 
     def quit_app(self):
         self._quitting = True
+        self.mpris.stop()
         self._stop_now_playing()
         self.mp.stop()
         QApplication.quit()
@@ -349,7 +362,7 @@ class Window(QWidget):
 
     def play_path(self, path):
         self.win_ctrl.set_folder(Path(path).parent.name)
-        self._play(self.instance.media_new(path), stream=False)
+        self._play(self.instance.media_new(path), stream=False, name=Path(path).stem, uri=Path(path).resolve().as_uri())
 
     def open_url_dialog(self):
         # Pre-fill with the clipboard when it holds a URL
@@ -375,7 +388,7 @@ class Window(QWidget):
             )
             return
         self.win_ctrl.set_folder(QUrl(url).host())
-        self._play(self.instance.media_new(url), stream=True, url=url)
+        self._play(self.instance.media_new(url), stream=True, url=url, uri=url)
 
     def open_argument(self, arg):
         # A URL or a file path given on the command line
@@ -384,8 +397,10 @@ class Window(QWidget):
         elif Path(arg).is_file():
             self.play_path(str(Path(arg).resolve()))
 
-    def _play(self, media, stream, url=None):
+    def _play(self, media, stream, url=None, name="", uri=""):
         self._stop_now_playing()
+        self._media_name = name
+        self._media_uri = uri
         self.player_ctrl.set_stream(stream, media)
         self.mp.set_media(media)
         # Embeds libVLC video into the native frame; needs X11 (run with QT_QPA_PLATFORM=xcb on Wayland)
@@ -409,12 +424,15 @@ class Window(QWidget):
             self._now_source.stop()
             self._now_source = None
         self._song_info = None
+        self._art_url = ""
         self.panel.clear()
 
     def _on_now_playing(self, source, info):
         # Ignore late answers from a source that has been replaced
         if source is not self._now_source:
             return
+        if info.get("cover") != (self._song_info or {}).get("cover"):
+            self._art_url = ""  # the previous cover no longer applies
         self._song_info = info
         self.player_ctrl.set_now_playing(info["text"])
         self.panel.set_info(info)
@@ -423,6 +441,8 @@ class Window(QWidget):
         if source is not self._now_source:
             return
         self.panel.set_cover(result["url"], result["data"])
+        if result["data"] and result["url"] == (self._song_info or {}).get("cover"):
+            self._art_url = cache_cover(result["data"], result["url"])
         self.notify_song()
 
     def notify_song(self):
@@ -443,13 +463,106 @@ class Window(QWidget):
             5000,
         )
 
-    def sync_tray_tooltip(self):
-        # The tray tooltip shows what is playing (updated only when it changes)
+    def on_tick(self):
         title = self.player_ctrl.title
+        self.sync_tray_tooltip(title)
+        self.sync_mpris(title)
+
+    def sync_tray_tooltip(self, title):
+        # The tray tooltip shows what is playing (updated only when it changes)
         tip = f"{title}\nVLC UI" if title else "VLC UI"
         if tip != self._tray_tip:
             self._tray_tip = tip
             self.tray.setToolTip(tip)
+
+    def mpris_state(self, title):
+        pc = self.player_ctrl
+        state = dict(EMPTY_STATE)
+        has_media = bool(self._media_name or self._media_uri)
+        vlc_state = self.mp.get_state()
+        if not has_media:
+            status = "Stopped"
+        elif vlc_state in (vlc.State.Playing, vlc.State.Opening, vlc.State.Buffering):
+            status = "Playing"
+        elif vlc_state == vlc.State.Paused:
+            status = "Paused"
+        else:
+            status = "Stopped"
+        info = self._song_info or {}
+        stream = bool(self._media_uri) and not self._media_name
+        name = info.get("song") or (title if stream else self._media_name)
+        length = 0 if pc.live else pc.lengthMs * 1000
+        state.update(
+            status=status,
+            has_media=has_media,
+            title=name or self._media_uri,
+            artist=info.get("artist", ""),
+            album=info.get("album", ""),
+            art_url=self._art_url,
+            uri=self._media_uri,
+            length_us=length,
+            position_us=0 if pc.live else pc.timeMs * 1000,
+            volume=pc.volume / 100,
+            can_seek=has_media and not pc.live and length > 0,
+        )
+        return state
+
+    def sync_mpris(self, title):
+        state = self.mpris_state(title)
+        track_key = (state["uri"], state["title"], state["artist"], state["album"])
+        if track_key != self._track_key:
+            self._track_key = track_key
+            self._track += 1
+        state["track"] = self._track
+        # The position changes all the time and is read on demand, so it is not part of the comparison
+        key = {k: v for k, v in state.items() if k != "position_us"}
+        if key == self._mpris_key:
+            self.mpris.state["position_us"] = state["position_us"]
+            return
+        self._mpris_key = key
+        self.mpris.update(state)
+
+    def _on_mpris_command(self, name, argument):
+        # Runs in the Qt thread: what the desktop (or a media key) asked for
+        mp, pc = self.mp, self.player_ctrl
+        state = mp.get_state()
+        has_media = bool(self._media_name or self._media_uri)
+        if name == "Raise":
+            self.show_window()
+        elif name == "Quit":
+            self.quit_app()
+        elif name == "OpenUri":
+            self.open_uri(argument)
+        elif name == "SetVolume":
+            mp.audio_set_volume(int(max(0.0, min(argument, 2.0)) * 100))
+        elif not has_media:
+            return
+        elif name == "PlayPause":
+            if state in (vlc.State.Playing, vlc.State.Opening, vlc.State.Buffering, vlc.State.Paused):
+                pc.togglePlay()
+            else:
+                mp.play()
+        elif name == "Play":
+            if state == vlc.State.Paused:
+                mp.set_pause(0)
+            elif state not in (vlc.State.Playing, vlc.State.Opening, vlc.State.Buffering):
+                mp.play()
+        elif name == "Pause":
+            if state in (vlc.State.Playing, vlc.State.Buffering):
+                mp.set_pause(1)
+        elif name == "Stop":
+            mp.stop()
+        elif name in ("Seek", "SetPosition") and not pc.live and pc.lengthMs > 0:
+            target_ms = pc.timeMs + argument / 1000 if name == "Seek" else argument / 1000
+            pc.seek(max(0.0, min(target_ms / pc.lengthMs, 1.0)))
+
+    def open_uri(self, uri):
+        # A file:// or http(s):// address, for example from `playerctl open`
+        url = QUrl(uri)
+        if url.isLocalFile():
+            self.play_path(url.toLocalFile())
+        else:
+            self.open_url(uri)
 
 
 # libVLC embeds the video through an X11 window id, so on Linux the app must run
